@@ -12,8 +12,8 @@ from git import Repo, GitCommandError
 
 app = FastAPI(title="EngiVerse AI Analyzer API")
 
-# Initialize the LLM - Llama 3 provides high-quality, detailed summaries
-llm = Ollama(model="llama3")
+# Increased timeout for the more complex prompt
+llm = Ollama(model="codellama", timeout=180)
 
 # --- Helper Functions ---
 def remove_readonly(func, path, _):
@@ -79,12 +79,12 @@ def analyze_repository(request: AnalyzeRequest):
         test_command = "npm test" if project_type == "nodejs" else "pytest"
         health_report["tests_found_and_passed"] = check_for_test_files(temp_dir) and run_command(test_command, temp_dir)["success"]
         
-        # --- 3. Summary Generation ---
+        # --- 3. Detailed AI Analysis ---
         code_content = read_project_files(temp_dir)
         
-        summary_prompt = f"""
-        You are an expert developer and project manager, tasked with analyzing an unfinished project to attract new contributors on the 'EngiVerse' platform. 
-        Your goal is to generate a structured JSON object that provides a comprehensive overview.
+        detailed_prompt = f"""
+        You are 'Code-Compass', an AI expert at analyzing open-source projects for the EngiVerse platform. 
+        Your purpose is to provide a rich, detailed, and structured analysis in a single JSON object to guide new contributors.
 
         <CONTEXT>
         <README>
@@ -96,41 +96,45 @@ def analyze_repository(request: AnalyzeRequest):
         </CONTEXT>
 
         <INSTRUCTIONS>
-        Based on the provided context, generate a JSON object with the following keys:
-        - "pitch": A compelling one-sentence elevator pitch for the project.
-        - "problem_solved": A brief paragraph explaining the problem this project aims to solve.
-        - "tech_stack": An array of strings listing the key technologies, languages, and frameworks used.
-        - "current_status": A short description of the project's current state (e.g., "Early prototype with basic UI", "Functional backend with API endpoints", etc.).
-        - "contribution_friendliness": A score from 1 (very difficult) to 10 (very easy) indicating how easy it would be for a new developer to start contributing, along with a brief justification for the score.
-        - "suggested_roadmap": An array of 3-5 strings, each being a specific, actionable next step or feature that a new contributor could build.
+        Generate a single JSON object with two top-level keys: "project_overview" and "contribution_guide".
+        1.  The "project_overview" object should contain:
+            - "elevator_pitch": A single, compelling sentence.
+            - "detailed_description": A paragraph explaining the project's purpose and the problem it solves.
+            - "target_audience": A brief description of who would use this project.
+            - "tech_stack": An array of strings listing the key technologies.
+        2.  The "contribution_guide" object should contain:
+            - "current_status": A description of how complete the project is.
+            - "contribution_friendliness": A score from 1-10 and a brief justification.
+            - "first_good_issue": A specific, actionable task a new developer could tackle first.
+            - "suggested_roadmap": An array of 3-4 major features or next steps for the project's future.
 
-        Do not include any text, markdown formatting like ```json, or explanations outside of the main JSON object.
+        Do not include any text or markdown formatting outside of the main JSON object.
         </INSTRUCTIONS>
         """
         
-        summary_text = llm.invoke(summary_prompt)
+        ai_response_text = llm.invoke(detailed_prompt)
 
         # 4. Parse the AI's response as JSON (Robust version)
         try:
-            # Find the start and end of the JSON object in the response
-            start_index = summary_text.find('{')
-            end_index = summary_text.rfind('}') + 1
+            start_index = ai_response_text.find('{')
+            end_index = ai_response_text.rfind('}') + 1
             
             if start_index != -1 and end_index != 0:
-                json_string = summary_text[start_index:end_index]
-                summary_json = json.loads(json_string)
+                json_string = ai_response_text[start_index:end_index]
+                ai_json_response = json.loads(json_string)
             else:
-                # Raise an error if no JSON object is found
-                raise json.JSONDecodeError("No JSON object found in the response.", summary_text, 0)
+                raise json.JSONDecodeError("No JSON object found in the response.", ai_response_text, 0)
 
         except json.JSONDecodeError:
-            summary_json = {"error": "Failed to parse AI summary.", "raw_response": summary_text}
+            ai_json_response = {"error": "Failed to parse AI summary.", "raw_response": ai_response_text}
 
         # 5. Combine and Return Results
-        return {
-            "health_report": health_report,
-            "summary": summary_json
+        final_response = {
+            "health_report": health_report
         }
+        final_response.update(ai_json_response)
+        
+        return final_response
 
     except GitCommandError as e:
         raise HTTPException(status_code=400, detail=f"Failed to clone repository. Is the URL correct and public? Error: {e}")
@@ -140,3 +144,4 @@ def analyze_repository(request: AnalyzeRequest):
         # 6. Cleanup
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, onerror=remove_readonly)
+
